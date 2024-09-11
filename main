@@ -1,0 +1,214 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
+import json
+import random
+
+# 实体类别及其颜色映射
+ENTITY_COLORS = {
+    "PER": "lightgreen",
+    "ORG": "lightblue",
+    "LOC": "lightyellow",
+    "MISC": "lightpink",
+    # 其他实体类型可以在这里添加
+}
+
+class TextAnnotationApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("文本标注软件")
+
+        # 设置主窗口的布局框架
+        self.main_frame = tk.Frame(root, padx=10, pady=10)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 文本显示框
+        self.text_display = tk.Text(self.main_frame, height=20, width=60)
+        self.text_display.grid(row=0, column=0, columnspan=4, pady=10)
+
+        # 添加到共指组按钮
+        self.add_segment_button = tk.Button(self.main_frame, text="添加到共指组", command=self.add_to_coreference_group, bg="#4CAF50", fg="white", padx=10)
+        self.add_segment_button.grid(row=1, column=0, pady=10)
+
+        # 实体标签输入
+        self.label_label = tk.Label(self.main_frame, text="实体标签:", font=("Arial", 10))
+        self.label_label.grid(row=1, column=2)
+        self.label_entry = tk.Entry(self.main_frame)
+        self.label_entry.grid(row=1, column=3)
+
+        # 标注共指组按钮
+        self.create_coreference_button = tk.Button(self.main_frame, text="标注共指组", command=self.assign_entity_to_coreference_group, bg="#2196F3", fg="white", padx=10)
+        self.create_coreference_button.grid(row=2, column=3, pady=10)
+
+        # 关系标注部分的说明和输入框
+        self.relations_label = tk.Label(self.main_frame, text="输入两个共指组的索引来标注关系:", font=("Arial", 10))
+        self.relations_label.grid(row=3, column=0, columnspan=4, pady=(10, 0))
+
+        self.relation_input1_label = tk.Label(self.main_frame, text="共指组索引1:", font=("Arial", 10))
+        self.relation_input1_label.grid(row=4, column=0)
+        self.relation_input1 = tk.Entry(self.main_frame, width=5)
+        self.relation_input1.grid(row=4, column=1)
+
+        self.relation_input2_label = tk.Label(self.main_frame, text="共指组索引2:", font=("Arial", 10))
+        self.relation_input2_label.grid(row=4, column=2)
+        self.relation_input2 = tk.Entry(self.main_frame, width=5)
+        self.relation_input2.grid(row=4, column=3)
+
+        self.relation_label_label = tk.Label(self.main_frame, text="关系标签:", font=("Arial", 10))
+        self.relation_label_label.grid(row=5, column=0)
+        self.relation_label_entry = tk.Entry(self.main_frame)
+        self.relation_label_entry.grid(row=5, column=1, columnspan=2)
+
+        self.annotate_relation_button = tk.Button(self.main_frame, text="标注关系", command=self.annotate_relation, bg="#FF9800", fg="white", padx=10)
+        self.annotate_relation_button.grid(row=5, column=3)
+
+        # 底部的功能按钮
+        self.export_button = tk.Button(self.main_frame, text="导出结果", command=self.export_results, bg="#795548", fg="white", padx=10)
+        self.export_button.grid(row=6, column=0, pady=10, columnspan=2)
+
+        self.load_button = tk.Button(self.main_frame, text="加载文本", command=self.load_text, bg="#009688", fg="white", padx=10)
+        self.load_button.grid(row=6, column=2)
+
+        self.clear_button = tk.Button(self.main_frame, text="清除标注", command=self.clear_annotations, bg="#F44336", fg="white", padx=10)
+        self.clear_button.grid(row=6, column=3)
+
+        # 侧边列表显示共指组及标签或颜色
+        self.coref_group_list = tk.Listbox(self.main_frame, height=20, width=40)
+        self.coref_group_list.grid(row=0, column=4, rowspan=7, padx=10, pady=10)
+
+        self.entities = {}  # 存储实体标签和共指组
+        self.coreference_groups = []  # 用于存储共指消解的实体组
+        self.relations = []  # 存储共指组之间的关系
+        self.current_coreference_group = []  # 临时存储当前共指组中的片段
+
+    def load_text(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
+        if file_path:
+            with open(file_path, "r", encoding="utf-8") as file:
+                text = file.read()
+                self.text_display.delete(1.0, tk.END)
+                self.text_display.insert(tk.END, text)
+
+    def add_to_coreference_group(self):
+        """
+        添加选中的文本片段到当前共指组
+        """
+        try:
+            selected_text = self.text_display.selection_get()
+            start_index = self.text_display.index(tk.SEL_FIRST)
+            end_index = self.text_display.index(tk.SEL_LAST)
+
+            # 将当前片段添加到当前共指组
+            entity_segment = {
+                "text": selected_text,
+                "start": start_index,
+                "end": end_index
+            }
+            self.current_coreference_group.append(entity_segment)
+
+            # 高亮显示选中的片段
+            tag_id = f"CorefTemp-{start_index}-{end_index}"
+            self.text_display.tag_add(tag_id, start_index, end_index)
+            self.text_display.tag_config(tag_id, background="lightgray", foreground="black")
+
+        except tk.TclError:
+            messagebox.showwarning("选择错误", "请先选择文本进行标注")
+
+    def assign_entity_to_coreference_group(self):
+        """
+        将当前共指组分配一个实体标签，并显示在侧边列表中
+        """
+        label = self.label_entry.get()
+
+        if not label:
+            messagebox.showwarning("输入错误", "请提供一个实体标签")
+            return
+
+        if not self.current_coreference_group:
+            messagebox.showwarning("共指组为空", "请先选择文本片段并添加到共指组")
+            return
+
+        group_id = f"Coref-{len(self.coreference_groups)}"
+        self.coreference_groups.append({
+            "group_id": group_id,
+            "label": label,
+            "entities": self.current_coreference_group
+        })
+
+        # 为整个共指组分配颜色
+        color = ENTITY_COLORS.get(label, self.random_color())
+        for entity in self.current_coreference_group:
+            tag_id = f"{group_id}-{entity['start']}-{entity['end']}"
+            self.text_display.tag_add(tag_id, entity["start"], entity["end"])
+            self.text_display.tag_config(tag_id, background=color, foreground="black")
+
+        # 更新侧边列表，显示共指组及内容
+        group_content = ', '.join([seg['text'] for seg in self.current_coreference_group])
+        self.coref_group_list.insert(tk.END, f"索引: {len(self.coreference_groups)-1}, 标签: {label}, 内容: {group_content}")
+
+        messagebox.showinfo("共指组标注成功", f"共指组 '{group_id}' 已被标注为 '{label}'")
+
+        # 清空当前共指组
+        self.current_coreference_group = []
+
+    def annotate_relation(self):
+        """
+        标注两个共指组之间的关系，基于索引
+        """
+        try:
+            index1 = int(self.relation_input1.get())
+            index2 = int(self.relation_input2.get())
+            relation_label = self.relation_label_entry.get()
+
+            if index1 < 0 or index2 < 0 or index1 >= len(self.coreference_groups) or index2 >= len(self.coreference_groups):
+                messagebox.showwarning("索引错误", "请提供有效的共指组索引")
+                return
+
+            if not relation_label:
+                messagebox.showwarning("输入错误", "请提供关系标签")
+                return
+
+            relation = {
+                "group1": self.coreference_groups[index1]["group_id"],
+                "group2": self.coreference_groups[index2]["group_id"],
+                "relation": relation_label
+            }
+
+            self.relations.append(relation)
+            messagebox.showinfo("关系标注成功", f"已标注共指组 '{index1}' 和 '{index2}' 之间的关系 '{relation_label}'")
+
+        except ValueError:
+            messagebox.showwarning("输入错误", "请输入有效的数字索引")
+
+    def random_color(self):
+        """生成随机颜色，用于标注新的实体类别"""
+        r = lambda: random.randint(0, 255)
+        return f'#{r():02x}{r():02x}{r():02x}'
+
+    def export_results(self):
+        if not self.coreference_groups and not self.relations:
+            messagebox.showwarning("导出错误", "没有可导出的标注")
+            return
+
+        results = {
+            "coreference_groups": self.coreference_groups,  # 导出共指消解的实体组
+            "relations": self.relations  # 导出共指组之间的关系
+        }
+
+        file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
+        if file_path:
+            with open(file_path, "w", encoding="utf-8") as json_file:
+                json.dump(results, json_file, indent=4)
+            messagebox.showinfo("导出成功", f"标注已导出至 {file_path}")
+
+    def clear_annotations(self):
+        self.text_display.tag_delete("all")
+        self.entities = {}
+        self.coreference_groups = []
+        self.relations = []
+        self.current_coreference_group = []
+        self.coref_group_list.delete(0, tk.END)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = TextAnnotationApp(root)
+    root.mainloop()
